@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import win32print
+import win32api
 import tempfile
 import subprocess
 import base64
@@ -21,22 +22,20 @@ app.add_middleware(
 )
 
 # =========================
-# PATH TO SUMATRAPDF (inside EXE folder)
+# SUMATRA PDF PATH
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-SUMATRA_PATH = os.path.join(
-    BASE_DIR,
-    "SumatraPDF.exe"
-)
+SUMATRA_PATH = os.path.join(BASE_DIR, "SumatraPDF.exe")
 
 # =========================
 # REQUEST MODEL
 # =========================
 class PrintRequest(BaseModel):
     printer: str
+    type: str        # pdf | image | html
     filename: str
-    content: str   # base64 PDF
+    content: str     # base64 OR html string
 
 # =========================
 # HEALTH CHECK
@@ -50,44 +49,88 @@ def home():
 # =========================
 @app.get("/printers")
 def get_printers():
-
     printers = win32print.EnumPrinters(2)
-
     return [p[2] for p in printers]
 
 # =========================
-# PRINT PDF SILENTLY
+# MAIN PRINT ENGINE
 # =========================
 @app.post("/print")
-def print_pdf(data: PrintRequest):
+def print_file(data: PrintRequest):
+
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, data.filename)
 
     try:
-        # temp file path
-        temp_dir = tempfile.gettempdir()
 
-        file_path = os.path.join(
-            temp_dir,
-            data.filename
-        )
+        # =========================
+        # PDF PRINT (BEST OPTION)
+        # =========================
+        if data.type == "pdf":
 
-        # decode base64 PDF
-        pdf_bytes = base64.b64decode(data.content)
+            pdf_bytes = base64.b64decode(data.content)
 
-        with open(file_path, "wb") as f:
-            f.write(pdf_bytes)
+            with open(file_path, "wb") as f:
+                f.write(pdf_bytes)
 
-        # silent print using SumatraPDF
-        subprocess.run([
-            SUMATRA_PATH,
-            "-print-to",
-            data.printer,
-            file_path
-        ], check=True)
+            subprocess.run([
+                SUMATRA_PATH,
+                "-print-to",
+                data.printer,
+                file_path
+            ], check=True)
 
-        return {
-            "success": True,
-            "printer": data.printer
-        }
+            return {"success": True, "type": "pdf"}
+
+        # =========================
+        # IMAGE PRINT (PNG / JPG)
+        # =========================
+        elif data.type == "image":
+
+            img_bytes = base64.b64decode(data.content)
+
+            with open(file_path, "wb") as f:
+                f.write(img_bytes)
+
+            # Windows default image printing
+            win32api.ShellExecute(
+                0,
+                "print",
+                file_path,
+                None,
+                ".",
+                0
+            )
+
+            return {"success": True, "type": "image"}
+
+        # =========================
+        # HTML PRINT
+        # =========================
+        elif data.type == "html":
+
+            html_path = file_path + ".html"
+
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(data.content)
+
+            # Uses default browser print engine
+            win32api.ShellExecute(
+                0,
+                "print",
+                html_path,
+                None,
+                ".",
+                0
+            )
+
+            return {"success": True, "type": "html"}
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported type. Use pdf | image | html"
+            )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
