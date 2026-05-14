@@ -1,0 +1,110 @@
+{
+  "info": {
+    "name": "Print API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for the Print API running at http://localhost:5000"
+  },
+  "item": [
+    {
+      "name": "1. Check API Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:5000/",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "5000",
+          "path": [""]
+        }
+      }
+    },
+    {
+      "name": "2. Get Available Printers",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:5000/printers",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "5000",
+          "path": ["printers"]
+        }
+      },
+      "description": "List all available printers. Use one of these names in the printer field when sending print jobs."
+    },
+    {
+      "name": "3. Get All Jobs Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:5000/jobs",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "5000",
+          "path": ["jobs"]
+        }
+      },
+      "description": "Check status of all jobs (pending, done, failed)"
+    },
+    {
+      "name": "4. Queue HTML Print",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "authorization",
+            "value": "CloudErpToken"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"html\",\n  \"filename\": \"test.html\",\n  \"printer\": \"Replace with printer name from /printers endpoint\",\n  \"content\": \"<html><body style='font-family:Arial'><h1>Test Print</h1><p>This is a test HTML document.</p></body></html>\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:5000/print",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "5000",
+          "path": ["print"]
+        }
+      },
+      "description": "Queue an HTML document for printing. IMPORTANT: Replace the printer name with a valid printer from /printers endpoint."
+    },
+    {
+      "name": "5. Queue PDF Print",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "authorization",
+            "value": "CloudErpToken"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"pdf\",\n  \"filename\": \"sample.pdf\",\n  \"printer\": \"Replace with printer name from /printers endpoint\",\n  \"content\": \"<BASE64_PDF_DATA>\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:5000/print",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "5000",
+          "path": ["print"]
+        }
+      },
+      "description": "Queue a PDF for printing. Base64 encode your PDF file and paste it in the content field."
+    }
+  ]
+}
+

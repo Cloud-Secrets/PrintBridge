@@ -1,17 +1,27 @@
-from fastapi import FastAPI, HTTPException
+﻿from fastapi import FastAPI, WebSocket, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+
+import base64
+import os
+import tempfile
+import subprocess
+import json
+import threading
+import time
 
 import win32print
 import win32api
-import tempfile
-import subprocess
-import base64
-import os
+
+from print_queue import init_db, add_job, get_pending_jobs, mark_done, mark_failed
 
 # =========================
-# APP
+# CONFIG
 # =========================
+API_TOKEN = "CloudErpToken"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SUMATRA = os.path.join(BASE_DIR, "SumatraPDF.exe")
+
 app = FastAPI()
 
 app.add_middleware(
@@ -22,128 +32,186 @@ app.add_middleware(
 )
 
 # =========================
-# SUMATRA PDF PATH
+# INIT DB
 # =========================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-SUMATRA_PATH = os.path.join(BASE_DIR, "SumatraPDF.exe")
+init_db()
 
 # =========================
-# REQUEST MODEL
+# AUTH
 # =========================
-class PrintRequest(BaseModel):
-    printer: str
-    type: str        # pdf | image | html
-    filename: str
-    content: str     # base64 OR html string
+def auth(token: str):
+    if token != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # =========================
-# HEALTH CHECK
+# ROUTER (printer selection)
 # =========================
+def route_printer(printer_type):
+    printers = win32print.EnumPrinters(2)
+    names = [p[2] for p in printers]
+
+    for p in names:
+        if printer_type in p.lower():
+            return p
+
+    return names[0] if names else None
+
+# =========================
+# PRINT ENGINE
+# =========================
+def print_job(job):
+    data = json.loads(job[1])
+    job_id = job[0]
+
+    try:
+        temp = tempfile.gettempdir()
+        file_path = os.path.join(temp, data["filename"])
+
+        # PDF
+        if data["type"] == "pdf":
+            pdf = base64.b64decode(data["content"])
+
+            with open(file_path, "wb") as f:
+                f.write(pdf)
+
+            subprocess.run([
+                SUMATRA,
+                "-print-to",
+                data["printer"],
+                file_path
+            ])
+            print(f"[WORKER] PDF printed: {file_path}")
+
+        # IMAGE
+        elif data["type"] == "image":
+            img = base64.b64decode(data["content"])
+
+            with open(file_path, "wb") as f:
+                f.write(img)
+
+            win32api.ShellExecute(0, "print", file_path, None, ".", 0)
+            print(f"[WORKER] Image printed: {file_path}")
+
+        # HTML
+        elif data["type"] == "html":
+            html_path = file_path + ".html"
+
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(data["content"])
+
+            win32api.ShellExecute(0, "print", html_path, None, ".", 0)
+            print(f"[WORKER] HTML printed: {html_path}")
+        elif data["type"] == "zpl":
+
+            # ZPL is raw text (NOT base64)
+            zpl_data = data["content"].encode("utf-8")
+
+            # create temp file
+            file_path = os.path.join(tempfile.gettempdir(), data["filename"] + ".zpl")
+
+            with open(file_path, "wb") as f:
+                f.write(zpl_data)
+
+            # send RAW to printer (Windows method)
+            hprinter = win32print.OpenPrinter(data["printer"])
+            try:
+                job = win32print.StartDocPrinter(hprinter, 1, ("ZPL Print", None, "RAW"))
+                win32print.StartPagePrinter(hprinter)
+                win32print.WritePrinter(hprinter, zpl_data)
+                win32print.EndPagePrinter(hprinter)
+                win32print.EndDocPrinter(hprinter)
+            finally:
+                win32print.ClosePrinter(hprinter)
+
+            print(f"[WORKER] ZPL printed: {file_path}")
+            return {"success": True, "type": "zpl"}
+
+        mark_done(job_id)
+        print(f"[WORKER] Job {job_id} completed successfully")
+
+    except Exception as e:
+        retries = job[2] + 1
+        print(f"[WORKER] Error processing job {job_id} (attempt {retries}): {e}")
+        import traceback
+        traceback.print_exc()
+        mark_failed(job_id, retries)
+
+
+# =========================
+# QUEUE WORKER (background)
+# =========================
+def worker():
+    print("[WORKER] Background worker started, polling every 2 seconds...")
+    while True:
+        jobs = get_pending_jobs()
+
+        if jobs:
+            print(f"[WORKER] Found {len(jobs)} pending job(s)")
+        
+        for job in jobs:
+            print_job(job)
+
+        time.sleep(2)
+
+threading.Thread(target=worker, daemon=True).start()
+
+# =========================
+# API
+# =========================
+
 @app.get("/")
 def home():
     return {"status": "running"}
 
-# =========================
-# GET PRINTERS
-# =========================
 @app.get("/printers")
-def get_printers():
-    printers = win32print.EnumPrinters(2)
-    return [p[2] for p in printers]
+def printers():
+    return [p[2] for p in win32print.EnumPrinters(2)]
 
-# =========================
-# MAIN PRINT ENGINE
-# =========================
+@app.get("/jobs")
+def get_jobs():
+    """Get all jobs with their status"""
+    from print_queue import get_all_jobs
+    jobs = get_all_jobs()
+    return {"jobs": jobs}
+
 @app.post("/print")
-def print_file(data: PrintRequest):
+def create_print(data: dict, authorization: str = Header(None)):
+    auth(authorization)
 
-    temp_dir = tempfile.gettempdir()
-    file_path = os.path.join(temp_dir, data.filename)
+    add_job(data)
+    print(f"[PRINT] Job queued: {data}")
+    return {"status": "queued"}
 
-    try:
+# =========================
+# WEBSOCKET (REAL TIME PRINT)
+# =========================
+@app.websocket("/ws")
+async def ws_print(websocket: WebSocket):
+    await websocket.accept()
 
-        # =========================
-        # PDF PRINT (BEST OPTION)
-        # =========================
-        if data.type == "pdf":
+    while True:
+        data = await websocket.receive_text()
+        job = json.loads(data)
 
-            pdf_bytes = base64.b64decode(data.content)
+        add_job(job)
 
-            with open(file_path, "wb") as f:
-                f.write(pdf_bytes)
-
-            subprocess.run([
-                SUMATRA_PATH,
-                "-print-to",
-                data.printer,
-                file_path
-            ], check=True)
-
-            return {"success": True, "type": "pdf"}
-
-        # =========================
-        # IMAGE PRINT (PNG / JPG)
-        # =========================
-        elif data.type == "image":
-
-            img_bytes = base64.b64decode(data.content)
-
-            with open(file_path, "wb") as f:
-                f.write(img_bytes)
-
-            # Windows default image printing
-            win32api.ShellExecute(
-                0,
-                "print",
-                file_path,
-                None,
-                ".",
-                0
-            )
-
-            return {"success": True, "type": "image"}
-
-        # =========================
-        # HTML PRINT
-        # =========================
-        elif data.type == "html":
-
-            html_path = file_path + ".html"
-
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(data.content)
-
-            # Uses default browser print engine
-            win32api.ShellExecute(
-                0,
-                "print",
-                html_path,
-                None,
-                ".",
-                0
-            )
-
-            return {"success": True, "type": "html"}
-
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Unsupported type. Use pdf | image | html"
-            )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        await websocket.send_text("queued")
 
 
 # =========================
 # START SERVER (IMPORTANT FOR EXE)
 # =========================
-if __name__ == "__main__":
-    import uvicorn
+import uvicorn
 
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=5000
-    )
+if __name__ == "__main__":
+    print("Starting FastAPI server on http://127.0.0.1:5000")
+    uvicorn.run(app, host="127.0.0.1", port=5000, log_level="info")
+else:
+    # For PyInstaller exe - run directly when module loads
+    try:
+        print("Starting FastAPI server on http://127.0.0.1:5000")
+        uvicorn.run(app, host="127.0.0.1", port=5000, log_level="info")
+    except Exception as e:
+        print(f"Error starting server: {e}")
+        import traceback
+        traceback.print_exc()
