@@ -1,8 +1,8 @@
 {
   "info": {
-    "name": "Print API",
+    "name": "CloudERP Print Server API",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Postman collection for the Print API running at http://localhost:5000"
+    "description": "Postman collection for the CloudERP Print Server running at http://127.0.0.1:5000"
   },
   "item": [
     {
@@ -11,13 +11,14 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "http://localhost:5000/",
+          "raw": "http://127.0.0.1:5000/",
           "protocol": "http",
-          "host": ["localhost"],
+          "host": ["127.0.0.1"],
           "port": "5000",
           "path": [""]
         }
-      }
+      },
+      "description": "Check if the Print Server is running and responsive."
     },
     {
       "name": "2. Get Available Printers",
@@ -25,14 +26,14 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "http://localhost:5000/printers",
+          "raw": "http://127.0.0.1:5000/printers",
           "protocol": "http",
-          "host": ["localhost"],
+          "host": ["127.0.0.1"],
           "port": "5000",
           "path": ["printers"]
         }
       },
-      "description": "List all available printers. Use one of these names in the printer field when sending print jobs."
+      "description": "List all available printers on the system. Use one of these names in the 'printer' field when sending print jobs."
     },
     {
       "name": "3. Get All Jobs Status",
@@ -40,14 +41,14 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "http://localhost:5000/jobs",
+          "raw": "http://127.0.0.1:5000/jobs",
           "protocol": "http",
-          "host": ["localhost"],
+          "host": ["127.0.0.1"],
           "port": "5000",
           "path": ["jobs"]
         }
       },
-      "description": "Check status of all jobs (pending, done, failed)"
+      "description": "Retrieve status of all print jobs (pending, done, failed). Shows up to 50 most recent jobs."
     },
     {
       "name": "4. Queue HTML Print",
@@ -65,17 +66,17 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"type\": \"html\",\n  \"filename\": \"test.html\",\n  \"printer\": \"Replace with printer name from /printers endpoint\",\n  \"content\": \"<html><body style='font-family:Arial'><h1>Test Print</h1><p>This is a test HTML document.</p></body></html>\"\n}"
+          "raw": "{\n  \"type\": \"html\",\n  \"filename\": \"invoice.html\",\n  \"printer\": \"Microsoft Print to PDF\",\n  \"content\": \"<html><body style='font-family:Arial'><h1>Invoice #12345</h1><p>Date: 2026-05-17</p><p>Total: $1,234.56</p></body></html>\"\n}"
         },
         "url": {
-          "raw": "http://localhost:5000/print",
+          "raw": "http://127.0.0.1:5000/print",
           "protocol": "http",
-          "host": ["localhost"],
+          "host": ["127.0.0.1"],
           "port": "5000",
           "path": ["print"]
         }
       },
-      "description": "Queue an HTML document for printing. IMPORTANT: Replace the printer name with a valid printer from /printers endpoint."
+      "description": "Queue an HTML document for printing. The HTML will be saved to temp and sent to the specified printer. Replace printer name with a valid printer from /printers endpoint."
     },
     {
       "name": "5. Queue PDF Print",
@@ -93,17 +94,88 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"type\": \"pdf\",\n  \"filename\": \"sample.pdf\",\n  \"printer\": \"Replace with printer name from /printers endpoint\",\n  \"content\": \"<BASE64_PDF_DATA>\"\n}"
+          "raw": "{\n  \"type\": \"pdf\",\n  \"filename\": \"report.pdf\",\n  \"printer\": \"Microsoft Print to PDF\",\n  \"content\": \"JVBERi0xLjQKJeLjz9MNCjEgMCBvYmo8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PmVuZG9iajIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iajMgMCBvYmo8PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXS9Db250ZW50cyA0IDAgUj4+ZW5kb2JqNCAwIG9iajw8L0xlbmd0aCA0NA4+PnN0cmVhbQpCVApFVApFbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA1CjAwMDAwIDA2NjU1IGYgCjAwMDAwOSAwMDAwMCBuIAowMDAwNTggMDAwMDAgbiAKMDAwMDExNSAwMDAwMCBuIAowMDAwMjEzIDAwMDAwIG4gCnRyYWlsZXI8PC9TaXplIDUvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoyNjcKJSVFT0YK\"\n}"
         },
         "url": {
-          "raw": "http://localhost:5000/print",
+          "raw": "http://127.0.0.1:5000/print",
           "protocol": "http",
-          "host": ["localhost"],
+          "host": ["127.0.0.1"],
           "port": "5000",
           "path": ["print"]
         }
       },
-      "description": "Queue a PDF for printing. Base64 encode your PDF file and paste it in the content field."
+      "description": "Queue a PDF for printing. The 'content' field must contain Base64-encoded PDF data. PDF is printed via SumatraPDF.exe with silent mode."
+    },
+    {
+      "name": "6. Queue Image Print",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "authorization",
+            "value": "CloudErpToken"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"image\",\n  \"filename\": \"label.jpg\",\n  \"printer\": \"Microsoft Print to PDF\",\n  \"content\": \"/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8VAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAA8A/9k=\"\n}"
+        },
+        "url": {
+          "raw": "http://127.0.0.1:5000/print",
+          "protocol": "http",
+          "host": ["127.0.0.1"],
+          "port": "5000",
+          "path": ["print"]
+        }
+      },
+      "description": "Queue an image (JPG, PNG, etc.) for printing. The 'content' field must contain Base64-encoded image data. Uses Windows Shell API to print."
+    },
+    {
+      "name": "7. Queue ZPL Print (Thermal Printer)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "authorization",
+            "value": "CloudErpToken"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"zpl\",\n  \"filename\": \"label\",\n  \"printer\": \"ZebraDesktopPrinter\",\n  \"content\": \"^XA\\n^CFD,40\\n^FO20,20^FDAQC Label Test^FS\\n^FO20,70^BYSS,3.0,200^BC^FD12345678901^FS\\n^FO20,150^FDSKU: SKU-001^FS\\n^FO20,200^FDPrice: $99.99^FS\\n^XZ\"\n}"
+        },
+        "url": {
+          "raw": "http://127.0.0.1:5000/print",
+          "protocol": "http",
+          "host": ["127.0.0.1"],
+          "port": "5000",
+          "path": ["print"]
+        }
+      },
+      "description": "Queue ZPL (Zebra Programming Language) commands for thermal printers. The 'content' field contains raw ZPL code (NOT Base64). Sends RAW data directly to printer."
+    },
+    {
+      "name": "8. WebSocket: Real-time Print Queue",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "ws://127.0.0.1:5000/ws",
+          "protocol": "ws",
+          "host": ["127.0.0.1"],
+          "port": "5000",
+          "path": ["ws"]
+        }
+      },
+      "description": "WebSocket endpoint for real-time print job queuing. Connect via WebSocket and send JSON print job objects. The server will respond with 'queued' confirmation. Supports the same job format as the /print endpoint but allows for real-time bidirectional communication."
     }
   ]
 }
