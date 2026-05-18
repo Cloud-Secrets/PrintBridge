@@ -3,3 +3,4 @@ uvicorn
 pywin32
 pystray
 Pillow
+requests

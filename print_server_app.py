@@ -12,19 +12,22 @@ import json
 import base64
 import tempfile
 import subprocess
+import socket  # تم إضافته للاتصال المباشر بطابعات الشبكة ZPL
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import pystray
 from PIL import Image, ImageDraw
 import queue
 import datetime
+import urllib.request
+import urllib.error
 
 # ─── Embedded FastAPI server ─────────────────────────────────────────────────
 from fastapi import FastAPI, HTTPException, Header, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-# ─── Print queue (inline, no separate file needed) ────────────────────────────
+# ─── Print queue (inline, no separate file needed) ────────────────============
 import sqlite3
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "print_queue.db")
@@ -33,11 +36,12 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
-            id       INTEGER PRIMARY KEY AUTOINCREMENT,
-            data     TEXT    NOT NULL,
-            retries  INTEGER DEFAULT 0,
-            status   TEXT    DEFAULT 'pending',
-            created  TEXT    DEFAULT (datetime('now'))
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            data             TEXT    NOT NULL,
+            retries          INTEGER DEFAULT 0,
+            status           TEXT    DEFAULT 'pending',
+            created          TEXT    DEFAULT (datetime('now')),
+            printer_response TEXT    DEFAULT ''
         )
     """)
 
@@ -49,6 +53,9 @@ def init_db():
     if "created" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN created TEXT")
         conn.execute("UPDATE jobs SET created = datetime('now') WHERE created IS NULL")
+    # إضافة عمود تسجيل رد الطابعة إن لم يكن موجوداً
+    if "printer_response" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN printer_response TEXT DEFAULT ''")
 
     conn.commit()
     conn.close()
@@ -70,7 +77,7 @@ def get_pending_jobs():
 def get_all_jobs(limit=50):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT id, status, retries, created, data FROM jobs ORDER BY id DESC LIMIT ?",
+        "SELECT id, status, retries, created, data, printer_response FROM jobs ORDER BY id DESC LIMIT ?",
         (limit,)
     ).fetchall()
     conn.close()
@@ -80,23 +87,23 @@ def get_all_jobs(limit=50):
         result.append({
             "id": r[0], "status": r[1], "retries": r[2],
             "created": r[3], "type": d.get("type","?"),
-            "filename": d.get("filename","?"), "printer": d.get("printer","?")
+            "filename": d.get("filename","?"), "printer": d.get("printer","?"),
+            "printer_response": r[5] if r[5] else ""
         })
     return result
 
-def mark_done(job_id):
+def mark_done(job_id, response="Success"):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE jobs SET status='done' WHERE id=?", (job_id,))
+    conn.execute("UPDATE jobs SET status='done', printer_response=? WHERE id=?", (response, job_id))
     conn.commit()
     conn.close()
 
-def mark_failed(job_id, retries):
+def mark_failed(job_id, retries, response="Failed"):
     status = "failed" if retries >= 3 else "pending"
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE jobs SET retries=?, status=? WHERE id=?", (retries, status, job_id))
+    conn.execute("UPDATE jobs SET retries=?, status=?, printer_response=? WHERE id=?", (retries, status, response, job_id))
     conn.commit()
     conn.close()
-
 
 def delete_job(job_id):
     conn = sqlite3.connect(DB_PATH)
@@ -104,10 +111,9 @@ def delete_job(job_id):
     conn.commit()
     conn.close()
 
-
 def restart_job(job_id):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE jobs SET status='pending', retries=0 WHERE id=?", (job_id,))
+    conn.execute("UPDATE jobs SET status='pending', retries=0, printer_response='' WHERE id=?", (job_id,))
     conn.commit()
     conn.close()
 
@@ -153,6 +159,12 @@ ICON_PATH  = os.path.join(RESOURCE_DIR, "icon.png")
 SUMATRA    = os.path.join(RESOURCE_DIR, "SumatraPDF.exe")
 HOST       = "127.0.0.1"
 PORT       = 5000
+APP_VERSION = "1.0.0"
+UPDATE_API_URL = os.environ.get("PRINT_SERVER_UPDATE_API", "")
+UPDATE_CHECK_INTERVAL = 60 * 30  
+UPDATE_DOWNLOAD_TIMEOUT = 30
+UPDATE_FILENAME = "print_server_app_update.exe"
+ENABLE_AUTO_UPDATE = True
 
 # ─── FastAPI App ──────────────────────────────────────────────────────────────
 api = FastAPI()
@@ -164,17 +176,25 @@ def auth(token):
     if token != API_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-def route_printer(printer_type):
+def parse_zpl_status(status_str):
+    """تحليل نص الرد القادم من أمر ~HS لطابعات Zebra وتفسيره بشكل مفهوم"""
     try:
-        import win32print
-        printers = win32print.EnumPrinters(2)
-        names = [p[2] for p in printers]
-        for p in names:
-            if printer_type in p.lower():
-                return p
-        return names[0] if names else None
+        # الرد النموذجي يكون على شكل: \x02030,0,0,1234,000,0,-,0,000,0,0,0\x03
+        parts = status_str.replace("\x02", "").replace("\x03", "").split(",")
+        if len(parts) >= 3:
+            paper_out = parts[1].strip()  # 1 تعني نفاد الورق
+            pause_status = parts[2].strip()  # 1 تعني الطابعة في وضع التوقف المؤقت
+            
+            reasons = []
+            if paper_out == "1": reasons.append("Paper Out (نفد الورق)")
+            if pause_status == "1": reasons.append("Printer Paused (الطابعة متوقفة مؤقتاً)")
+            
+            if reasons:
+                return f"Error: {', '.join(reasons)}"
+            return "Ready & Printing"
     except Exception:
-        return None
+        pass
+    return "Printed (Sent to Buffer)"
 
 def print_job(job):
     try:
@@ -185,9 +205,10 @@ def print_job(job):
 
     data   = json.loads(job[1])
     job_id = job[0]
+    retries = job[2] + 1
 
     try:
-        temp      = tempfile.gettempdir()
+        temp = tempfile.gettempdir()
         file_path = os.path.join(temp, data["filename"])
 
         if data["type"] == "pdf":
@@ -196,6 +217,7 @@ def print_job(job):
                 f.write(pdf)
             subprocess.run([SUMATRA, "-print-to", data["printer"], file_path])
             log(f"PDF printed → {data['printer']}: {data['filename']}")
+            mark_done(job_id, "Sent to SumatraPDF")
 
         elif data["type"] == "image":
             img = base64.b64decode(data["content"])
@@ -203,6 +225,7 @@ def print_job(job):
                 f.write(img)
             win32api.ShellExecute(0, "print", file_path, None, ".", 0)
             log(f"Image printed → {data['printer']}: {data['filename']}")
+            mark_done(job_id, "Sent to Windows Shell")
 
         elif data["type"] == "html":
             html_path = file_path + ".html"
@@ -210,29 +233,87 @@ def print_job(job):
                 f.write(data["content"])
             win32api.ShellExecute(0, "print", html_path, None, ".", 0)
             log(f"HTML printed → {data['printer']}: {data['filename']}")
+            mark_done(job_id, "Sent to Windows Shell")
 
         elif data["type"] == "zpl":
-            zpl_data  = data["content"].encode("utf-8")
-            zpl_path  = os.path.join(tempfile.gettempdir(), data["filename"] + ".zpl")
-            with open(zpl_path, "wb") as f:
-                f.write(zpl_data)
-            hprinter = win32print.OpenPrinter(data["printer"])
+            zpl_content = data["content"]
+            printer_name = data["printer"]
+            
+            # --- الطريقة الأولى: إذا كانت الطابعة طابعة شبكة (مثال: "1192.168.1.50") ---
+            # يتم فحص إذا كان اسم الطابعة المعطى هو عنوان IP أو مسار شبكي يحتوي على IP
+            is_network_ip = False
+            ip_address = printer_name
+            
+            # محاولة استخراج الـ IP إذا كان مكتوباً بشكل صريح
+            clean_ip = printer_name.replace("\\", "/").split("/")[-1]
+            if any(char.isdigit() for char in clean_ip) and "." in clean_ip:
+                is_network_ip = True
+                ip_address = clean_ip
+
+            if is_network_ip:
+                try:
+                    # الاتصال المباشر بالطابعة عبر منفذ الطباعة الافتراضي لـ Zebra وهو 9100
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(4.0)
+                    s.connect((ip_address, 9100))
+                    
+                    # 1. إرسال أمر الاستعلام عن الحالة قبل الطباعة
+                    s.sendall(b"~HS")
+                    status_response = s.recv(1024).decode('ascii', errors='ignore')
+                    parsed_status = parse_zpl_status(status_response)
+                    
+                    if "Error" in parsed_status:
+                        s.close()
+                        raise Exception(f"Printer reported error before printing: {parsed_status}")
+                    
+                    # 2. إرسال ملف الـ ZPL الفعلي للطباعة
+                    s.sendall(zpl_content.encode("utf-8"))
+                    s.close()
+                    
+                    log(f"ZPL Printed via Network Socket to {ip_address}")
+                    mark_done(job_id, f"Network Print: {parsed_status}")
+                    return
+                except Exception as net_err:
+                    log(f"Network ZPL failed or timeout for {ip_address}: {net_err}")
+                    # إذا فشل اتصال الشبكة المباشر سنتركه يتجه للطريقة الثانية (ويندوز)
+
+            # --- الطريقة الثانية: الطباعة القياسية عبر نظام الويندوز لـ USB / Shared Printers ---
+            zpl_data = zpl_content.encode("ascii", errors="ignore")
+            hprinter = win32print.OpenPrinter(printer_name)
             try:
-                win32print.StartDocPrinter(hprinter, 1, ("ZPL Print", None, "RAW"))
+                # إرسال أمر الطباعة
+                hdc = win32print.StartDocPrinter(hprinter, 1, ("ZPL Print", None, "RAW"))
                 win32print.StartPagePrinter(hprinter)
                 win32print.WritePrinter(hprinter, zpl_data)
                 win32print.EndPagePrinter(hprinter)
                 win32print.EndDocPrinter(hprinter)
+                
+                # مراقبة الـ Job في الويندوز لمدة ثانيتين لاكتشاف الأخطاء الفورية (مثل الطابعة Offline)
+                time.sleep(1.5)
+                jobs = win32print.EnumJobs(hprinter, 0, 100, 1)
+                printer_status_msg = "Spooler Success"
+                
+                for j in jobs:
+                    # فحص إذا كان الـ Job المرسل يحمل حالة خطأ في الويندوز
+                    if j['pPrinterName'] == printer_name:
+                        p_status = j['Status']
+                        if p_status & win32print.JOB_STATUS_ERROR: printer_status_msg = "Error: General Spooler Error"
+                        elif p_status & win32print.JOB_STATUS_OFFLINE: printer_status_msg = "Error: Printer Offline"
+                        elif p_status & win32print.JOB_STATUS_PAPEROUT: printer_status_msg = "Error: Paper Out"
+                        elif p_status & win32print.JOB_STATUS_PAUSED: printer_status_msg = "Warning: Printer Paused"
+                
+                if "Error" in printer_status_msg:
+                    raise Exception(printer_status_msg)
+                
+                log(f"ZPL printed via Windows → {printer_name}: {data['filename']}")
+                mark_done(job_id, printer_status_msg)
+                
             finally:
                 win32print.ClosePrinter(hprinter)
-            log(f"ZPL printed → {data['printer']}: {data['filename']}")
-
-        mark_done(job_id)
 
     except Exception as e:
-        retries = job[2] + 1
         log(f"ERROR job #{job_id} (attempt {retries}): {e}")
-        mark_failed(job_id, retries)
+        mark_failed(job_id, retries, str(e))
 
 def worker():
     log("Print worker started — polling every 2 s")
@@ -277,6 +358,75 @@ async def ws_print(websocket: WebSocket):
         log(f"WS job queued: {job.get('type','?')}")
         await websocket.send_text("queued")
 
+
+def parse_version(version: str):
+    try:
+        return tuple(int(part) for part in version.split(".") if part.isdigit())
+    except Exception:
+        return ()
+
+def is_newer_version(latest: str, current: str):
+    return parse_version(latest) > parse_version(current)
+
+def fetch_update_info():
+    if not UPDATE_API_URL:
+        return None
+    try:
+        request = urllib.request.Request(
+            UPDATE_API_URL,
+            headers={"User-Agent": "CloudERP Print Server"}
+        )
+        with urllib.request.urlopen(request, timeout=UPDATE_DOWNLOAD_TIMEOUT) as response:
+            data = response.read().decode("utf-8")
+            info = json.loads(data)
+            if isinstance(info, dict):
+                return info
+    except Exception as exc:
+        log(f"Update check failed: {exc}")
+    return None
+
+def download_update_package(url: str):
+    try:
+        with urllib.request.urlopen(url, timeout=UPDATE_DOWNLOAD_TIMEOUT) as response:
+            tmp_path = os.path.join(tempfile.gettempdir(), UPDATE_FILENAME)
+            with open(tmp_path, "wb") as f:
+                f.write(response.read())
+        log(f"Update package downloaded to {tmp_path}")
+        return tmp_path
+    except Exception as exc:
+        log(f"Update download failed: {exc}")
+        return None
+
+def start_update_installer(path: str):
+    try:
+        log("Launching update installer...")
+        subprocess.Popen([path], cwd=os.path.dirname(path))
+        if getattr(sys, "frozen", False):
+            os._exit(0)
+        return True
+    except Exception as exc:
+        log_exception(exc)
+        return False
+
+def check_for_updates():
+    info = fetch_update_info()
+    if not info:
+        return "Update check failed"
+
+    latest = info.get("version")
+    url = info.get("url")
+    if latest and is_newer_version(latest, APP_VERSION):
+        log(f"Update available: {latest} (current {APP_VERSION})")
+        if url:
+            downloaded = download_update_package(url)
+            if downloaded:
+                if start_update_installer(downloaded):
+                    return f"Updating to {latest}..."
+                return f"Downloaded update {latest}, install failed"
+        return f"Update available: {latest}"
+
+    return f"Up to date ({APP_VERSION})"
+
 def start_uvicorn():
     if getattr(sys, "frozen", False):
         if sys.stderr is None or sys.stdout is None:
@@ -298,23 +448,14 @@ threading.Thread(target=start_uvicorn, daemon=True).start()
 
 # ─── Tray Icon ────────────────────────────────────────────────────────────────
 def make_tray_icon():
-    """Draw a simple printer icon as PNG in memory."""
     size = 64
     img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d    = ImageDraw.Draw(img)
-
-    # Background circle
     d.ellipse([2, 2, 62, 62], fill="#1a73e8")
-
-    # Printer body
     d.rectangle([14, 26, 50, 44], fill="white")
-    # Printer top (paper slot)
     d.rectangle([20, 18, 44, 28], fill="white")
-    # Paper output
     d.rectangle([20, 38, 44, 50], fill="#e8f0fe")
-    # Indicator dot
     d.ellipse([40, 30, 46, 36], fill="#1a73e8")
-
     return img
 
 # ─── Main GUI Window ──────────────────────────────────────────────────────────
@@ -322,12 +463,11 @@ class PrintServerApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("CloudERP Print Server")
-        self.root.geometry("700x480")
-        self.root.minsize(580, 380)
+        self.root.geometry("850x480")  # قمنا بتوسيع النافذة قليلاً لتناسب العمود الجديد
+        self.root.minsize(700, 380)
         self.root.configure(bg="#0f1117")
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
-        # Try to set the app icon from icon.png.
         try:
             if os.path.exists(ICON_PATH):
                 self._window_icon = tk.PhotoImage(file=ICON_PATH)
@@ -336,13 +476,11 @@ class PrintServerApp:
             pass
 
         self._build_ui()
-        # self._start_log_poller()
         self._start_jobs_poller()
+        self._start_update_poller()
 
-    # ── UI ──────────────────────────────────────────────────────────────────
     def _build_ui(self):
         FONT_MONO  = ("Consolas", 9)
-        FONT_LABEL = ("Segoe UI", 10)
         BG         = "#0f1117"
         CARD       = "#1c1f2b"
         ACCENT     = "#1a73e8"
@@ -350,7 +488,6 @@ class PrintServerApp:
         TEXT       = "#e8eaf6"
         MUTED      = "#7986cb"
 
-        # ── Header ─────────────────────────────────────────────────────────
         header = tk.Frame(self.root, bg=ACCENT, height=52)
         header.pack(fill="x")
         header.pack_propagate(False)
@@ -364,63 +501,28 @@ class PrintServerApp:
                                    bg=ACCENT, fg=GREEN)
         self.status_dot.pack(side="right", padx=18)
 
-        tk.Label(header, text=f"http://{HOST}:{PORT}",
-                 font=FONT_MONO, bg=ACCENT, fg="#b3c7f7"
-                 ).pack(side="right", padx=4)
+        self.update_label = tk.Label(header, text="Checking updates...", font=("Segoe UI", 9), bg=ACCENT, fg="#b3c7f7")
+        self.update_label.pack(side="right", padx=8)
 
-        # ── Main panes ─────────────────────────────────────────────────────
-        pane = tk.PanedWindow(self.root, orient="vertical",
-                              bg=BG, sashwidth=6, sashrelief="flat")
+        tk.Label(header, text=f"http://{HOST}:{PORT}", font=FONT_MONO, bg=ACCENT, fg="#b3c7f7").pack(side="right", padx=4)
+
+        pane = tk.PanedWindow(self.root, orient="vertical", bg=BG, sashwidth=6, sashrelief="flat")
         pane.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # ── Log panel ──────────────────────────────────────────────────────
-        # log_frame = tk.Frame(pane, bg=CARD, bd=0)
-        # tk.Label(log_frame, text="  Activity Log",
-        #          font=("Segoe UI Semibold", 10),
-        #          bg=CARD, fg=MUTED, anchor="w"
-        #          ).pack(fill="x", pady=(6, 0))
-
-        # self.log_box = scrolledtext.ScrolledText(
-        #     log_frame, bg="#0a0d14", fg=TEXT,
-        #     font=FONT_MONO, bd=0, relief="flat",
-        #     insertbackground=TEXT, state="disabled",
-        #     wrap="word", height=10
-        # )
-        # self.log_box.pack(fill="both", expand=True, padx=6, pady=6)
-
-        # btn_bar = tk.Frame(log_frame, bg=CARD)
-        # btn_bar.pack(fill="x", padx=6, pady=(0, 6))
-        # tk.Button(btn_bar, text="Clear Log", command=self._clear_log,
-        #           font=("Segoe UI", 9), bg="#252840", fg=MUTED,
-        #           relief="flat", cursor="hand2", padx=10
-        #           ).pack(side="right")
-
-        # pane.add(log_frame, minsize=140)
-
-        # ── Jobs panel ─────────────────────────────────────────────────────
         jobs_frame = tk.Frame(pane, bg=CARD)
-        tk.Label(jobs_frame, text="  Recent Jobs",
-                 font=("Segoe UI Semibold", 10),
-                 bg=CARD, fg=MUTED, anchor="w"
-                 ).pack(fill="x", pady=(6, 0))
+        tk.Label(jobs_frame, text="  Recent Jobs", font=("Segoe UI Semibold", 10), bg=CARD, fg=MUTED, anchor="w").pack(fill="x", pady=(6, 0))
 
-        cols = ("id", "status", "type", "printer", "filename", "created")
-        self.tree = ttk.Treeview(jobs_frame, columns=cols,
-                                 show="headings", height=8)
+        # أضفنا عمود التقرير والرد هنا "response"
+        cols = ("id", "status", "type", "printer", "filename", "response", "created")
+        self.tree = ttk.Treeview(jobs_frame, columns=cols, show="headings", height=8)
 
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Treeview",
-                        background="#0a0d14", foreground=TEXT,
-                        fieldbackground="#0a0d14", rowheight=24,
-                        font=FONT_MONO)
-        style.configure("Treeview.Heading",
-                        background=CARD, foreground=MUTED,
-                        font=("Segoe UI", 9, "bold"), relief="flat")
+        style.configure("Treeview", background="#0a0d14", foreground=TEXT, fieldbackground="#0a0d14", rowheight=24, font=FONT_MONO)
+        style.configure("Treeview.Heading", background=CARD, foreground=MUTED, font=("Segoe UI", 9, "bold"), relief="flat")
         style.map("Treeview", background=[("selected", ACCENT)])
 
-        widths = {"id": 40, "status": 72, "type": 60,
-                  "printer": 160, "filename": 160, "created": 80}
+        widths = {"id": 40, "status": 72, "type": 50, "printer": 120, "filename": 120, "response": 200, "created": 80}
         for c in cols:
             self.tree.heading(c, text=c.upper())
             self.tree.column(c, width=widths.get(c, 100), anchor="w")
@@ -430,10 +532,7 @@ class PrintServerApp:
         self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
         sb.pack(side="right", fill="y", pady=6, padx=(0, 6))
 
-        hint = tk.Label(jobs_frame,
-                        text="Right-click any job to restart or delete it.",
-                        font=("Segoe UI", 9), bg=CARD, fg="#9aa0c3",
-                        anchor="w")
+        hint = tk.Label(jobs_frame, text="Right-click any job to restart or delete it.", font=("Segoe UI", 9), bg=CARD, fg="#9aa0c3", anchor="w")
         hint.pack(fill="x", padx=6, pady=(0, 4))
 
         self._job_menu = tk.Menu(self.root, tearoff=0)
@@ -443,50 +542,45 @@ class PrintServerApp:
 
         action_bar = tk.Frame(jobs_frame, bg=CARD)
         action_bar.pack(fill="x", padx=6, pady=(0, 8))
-        tk.Button(action_bar, text="Restart Job",
-                  command=self._restart_selected_job,
-                  font=("Segoe UI", 9), bg="#252840", fg=MUTED,
-                  relief="flat", cursor="hand2", padx=10
-                  ).pack(side="left", padx=(0, 6))
-        tk.Button(action_bar, text="Delete Job",
-                  command=self._delete_selected_job,
-                  font=("Segoe UI", 9), bg="#252840", fg=MUTED,
-                  relief="flat", cursor="hand2", padx=10
-                  ).pack(side="left")
+        tk.Button(action_bar, text="Restart Job", command=self._restart_selected_job, font=("Segoe UI", 9), bg="#252840", fg=MUTED, relief="flat", cursor="hand2", padx=10).pack(side="left", padx=(0, 6))
+        tk.Button(action_bar, text="Delete Job", command=self._delete_selected_job, font=("Segoe UI", 9), bg="#252840", fg=MUTED, relief="flat", cursor="hand2", padx=10).pack(side="left")
 
-        # Color tags
         self.tree.tag_configure("done",    foreground="#34a853")
         self.tree.tag_configure("failed",  foreground="#ea4335")
         self.tree.tag_configure("pending", foreground="#fbbc04")
 
         pane.add(jobs_frame, minsize=140)
 
-        # ── Footer ─────────────────────────────────────────────────────────
         footer = tk.Frame(self.root, bg="#12151f", height=30)
         footer.pack(fill="x")
         footer.pack_propagate(False)
-        tk.Label(footer,
-                 text="Minimise to hide • right-click tray icon to quit",
-                 font=("Segoe UI", 8), bg="#12151f", fg="#4a5080"
-                 ).pack(side="left", padx=12, pady=6)
-
-    # ── Polling helpers ─────────────────────────────────────────────────────
-    # def _start_log_poller(self):
-    #     def poll():
-    #         while not log_queue.empty():
-    #             msg = log_queue.get_nowait()
-    #             self.log_box.configure(state="normal")
-    #             self.log_box.insert("end", msg + "\n")
-    #             self.log_box.configure(state="disabled")
-    #             self.log_box.see("end")
-    #         self.root.after(500, poll)
-    #     self.root.after(500, poll)
+        tk.Label(footer, text="Minimise to hide • right-click tray icon to quit", font=("Segoe UI", 8), bg="#12151f", fg="#4a5080").pack(side="left", padx=12, pady=6)
 
     def _start_jobs_poller(self):
         def poll():
             self._refresh_jobs()
             self.root.after(3000, poll)
         self.root.after(1000, poll)
+
+    def _update_status(self, text):
+        try: self.update_label.config(text=text)
+        except Exception: pass
+
+    def _check_update_now(self):
+        self._update_status("Checking updates...")
+        def run():
+            status = check_for_updates()
+            self.root.after(0, lambda: self._update_status(status))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _start_update_poller(self):
+        if not ENABLE_AUTO_UPDATE or not UPDATE_API_URL: return
+        def poll():
+            while True:
+                status = check_for_updates()
+                self.root.after(0, lambda s=status: self._update_status(s))
+                time.sleep(UPDATE_CHECK_INTERVAL)
+        threading.Thread(target=poll, daemon=True).start()
 
     def _refresh_jobs(self):
         for row in self.tree.get_children():
@@ -495,94 +589,68 @@ class PrintServerApp:
             tag = j["status"]
             self.tree.insert("", "end",
                 values=(j["id"], j["status"], j["type"],
-                        j["printer"], j["filename"], j["created"]),
+                        j["printer"], j["filename"], j["printer_response"], j["created"]),
                 tags=(tag,))
 
     def _on_job_right_click(self, event):
         item = self.tree.identify_row(event.y)
         if item:
             self.tree.selection_set(item)
-            try:
-                self._job_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                self._job_menu.grab_release()
+            try: self._job_menu.tk_popup(event.x_root, event.y_root)
+            finally: self._job_menu.grab_release()
 
     def _get_selected_job_id(self):
         selection = self.tree.selection()
-        if not selection:
-            return None
+        if not selection: return None
         values = self.tree.item(selection[0], "values")
         return int(values[0]) if values else None
 
     def _delete_selected_job(self):
         job_id = self._get_selected_job_id()
-        if job_id is None:
-            return
+        if job_id is None: return
         delete_job(job_id)
         self._refresh_jobs()
         log(f"Job deleted: {job_id}")
 
     def _restart_selected_job(self):
         job_id = self._get_selected_job_id()
-        if job_id is None:
-            return
+        if job_id is None: return
         restart_job(job_id)
         self._refresh_jobs()
         log(f"Job restarted: {job_id}")
 
-    # def _clear_log(self):
-    #     self.log_box.configure(state="normal")
-    #     self.log_box.delete("1.0", "end")
-    #     self.log_box.configure(state="disabled")
-
-    # ── Tray integration ────────────────────────────────────────────────────
-    def hide_window(self):
-        self.root.withdraw()
-
+    def hide_window(self): self.root.withdraw()
     def show_window(self, icon=None, item=None):
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
 
     def quit_app(self, icon=None, item=None):
-        try:
-            icon.stop()
-        except Exception:
-            pass
+        try: icon.stop()
+        except Exception: pass
         self.root.quit()
         os._exit(0)
 
     def run(self):
-        # Build tray icon
-        if os.path.exists(ICON_PATH):
-            tray_img = Image.open(ICON_PATH)
-        else:
-            tray_img = make_tray_icon()
+        if os.path.exists(ICON_PATH): tray_img = Image.open(ICON_PATH)
+        else: tray_img = make_tray_icon()
         menu = pystray.Menu(
             pystray.MenuItem("Open Print Server", self.show_window, default=True),
+            pystray.MenuItem("Check for Updates", self._check_update_now),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self.quit_app),
         )
-        icon = pystray.Icon("CloudERP Print", tray_img,
-                            "CloudERP Print Server", menu)
-
-        # Run tray in background thread
+        icon = pystray.Icon("CloudERP Print", tray_img, "CloudERP Print Server", menu)
         threading.Thread(target=icon.run, daemon=True).start()
-
-        # Show window initially
         self.show_window()
         self.root.mainloop()
 
 
-# ─── Entry point ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Hide the console window on Windows
     try:
         import ctypes
-        ctypes.windll.user32.ShowWindow(
-            ctypes.windll.kernel32.GetConsoleWindow(), 0)
-    except Exception:
-        pass
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+    except Exception: pass
 
     app = PrintServerApp()
     app.run()
