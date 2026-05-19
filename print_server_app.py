@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import base64
+import binascii
 import tempfile
 import subprocess
 import socket  # تم إضافته للاتصال المباشر بطابعات الشبكة ZPL
@@ -176,6 +177,69 @@ def auth(token):
     if token != API_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+def validate_print_payload(data: dict):
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload: expected JSON object")
+
+    job_type = data.get("type")
+    allowed_types = {"pdf", "image", "html", "zpl"}
+    if job_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Allowed: {', '.join(sorted(allowed_types))}")
+
+    filename = data.get("filename")
+    if not isinstance(filename, str) or not filename.strip():
+        raise HTTPException(status_code=400, detail="Invalid filename: non-empty string is required")
+
+    printer = data.get("printer")
+    if not isinstance(printer, str) or not printer.strip():
+        raise HTTPException(status_code=400, detail="Invalid printer: non-empty string is required")
+
+    if job_type in {"pdf", "image"}:
+        content = data.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(status_code=400, detail=f"Invalid {job_type} content: base64 string is required")
+        try:
+            base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError):
+            raise HTTPException(status_code=400, detail=f"Invalid {job_type} content: malformed base64")
+
+    elif job_type == "html":
+        content = data.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(status_code=400, detail="Invalid html content: non-empty string is required")
+
+    elif job_type == "zpl":
+        zpl_text = data.get("content")
+        zpl_raw_b64 = data.get("content_bytes_base64")
+        if not zpl_text and not zpl_raw_b64:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid zpl payload: provide `content` text or `content_bytes_base64`"
+            )
+
+        if zpl_raw_b64:
+            if not isinstance(zpl_raw_b64, str) or not zpl_raw_b64.strip():
+                raise HTTPException(status_code=400, detail="Invalid `content_bytes_base64`: non-empty base64 string required")
+            try:
+                base64.b64decode(zpl_raw_b64, validate=True)
+            except (binascii.Error, ValueError):
+                raise HTTPException(status_code=400, detail="Invalid `content_bytes_base64`: malformed base64")
+
+        if zpl_text is not None and not isinstance(zpl_text, (str, bytes)):
+            raise HTTPException(status_code=400, detail="Invalid zpl `content`: expected string/bytes")
+
+        if zpl_text is not None and isinstance(zpl_text, str) and not zpl_text.strip() and not zpl_raw_b64:
+            raise HTTPException(status_code=400, detail="Invalid zpl `content`: empty string")
+
+        if "content_encoding" in data:
+            content_encoding = data.get("content_encoding")
+            if not isinstance(content_encoding, str) or not content_encoding.strip():
+                raise HTTPException(status_code=400, detail="Invalid `content_encoding`: non-empty string required")
+            try:
+                "test".encode(content_encoding.strip())
+            except LookupError:
+                raise HTTPException(status_code=400, detail=f"Invalid `content_encoding`: unknown codec `{content_encoding}`")
+
 def parse_zpl_status(status_str):
     """تحليل نص الرد القادم من أمر ~HS لطابعات Zebra وتفسيره بشكل مفهوم"""
     try:
@@ -194,7 +258,51 @@ def parse_zpl_status(status_str):
             return "Ready & Printing"
     except Exception:
         pass
-    return "Printed (Sent to Buffer)"
+    return "Unknown (Status Parsed Fallback)"
+
+def build_zpl_payload(data: dict):
+    """
+    Build bytes payload for ZPL without implicit lossy conversion.
+    Optional keys:
+      - content_bytes_base64: send exact bytes payload
+      - content_encoding: encoding for text content (default: utf-8)
+    """
+    if data.get("content_bytes_base64"):
+        return base64.b64decode(data["content_bytes_base64"])
+
+    zpl_content = data.get("content", "")
+    if isinstance(zpl_content, bytes):
+        return zpl_content
+    if not isinstance(zpl_content, str):
+        zpl_content = str(zpl_content)
+
+    encoding = (data.get("content_encoding") or "utf-8").strip()
+    return zpl_content.encode(encoding, errors="strict")
+
+def decode_job_status_flags(win32print, status):
+    flag_map = [
+        ("JOB_STATUS_PAUSED", "Paused"),
+        ("JOB_STATUS_ERROR", "Error"),
+        ("JOB_STATUS_DELETING", "Deleting"),
+        ("JOB_STATUS_SPOOLING", "Spooling"),
+        ("JOB_STATUS_PRINTING", "Printing"),
+        ("JOB_STATUS_OFFLINE", "Offline"),
+        ("JOB_STATUS_PAPEROUT", "Paper Out"),
+        ("JOB_STATUS_PRINTED", "Printed"),
+        ("JOB_STATUS_DELETED", "Deleted"),
+        ("JOB_STATUS_BLOCKED_DEVQ", "Blocked Queue"),
+        ("JOB_STATUS_USER_INTERVENTION", "User Intervention Required"),
+        ("JOB_STATUS_RESTART", "Restarting"),
+        ("JOB_STATUS_COMPLETE", "Complete"),
+        ("JOB_STATUS_RETAINED", "Retained"),
+        ("JOB_STATUS_RENDERING_LOCALLY", "Rendering Locally"),
+    ]
+    messages = []
+    for const_name, label in flag_map:
+        const_value = getattr(win32print, const_name, None)
+        if const_value is not None and (status & const_value):
+            messages.append(label)
+    return messages or ["Queued"]
 
 def print_job(job):
     try:
@@ -236,7 +344,7 @@ def print_job(job):
             mark_done(job_id, "Sent to Windows Shell")
 
         elif data["type"] == "zpl":
-            zpl_content = data["content"]
+            zpl_data = build_zpl_payload(data)
             printer_name = data["printer"]
             
             # --- الطريقة الأولى: إذا كانت الطابعة طابعة شبكة (مثال: "1192.168.1.50") ---
@@ -267,7 +375,7 @@ def print_job(job):
                         raise Exception(f"Printer reported error before printing: {parsed_status}")
                     
                     # 2. إرسال ملف الـ ZPL الفعلي للطباعة
-                    s.sendall(zpl_content.encode("utf-8"))
+                    s.sendall(zpl_data)
                     s.close()
                     
                     log(f"ZPL Printed via Network Socket to {ip_address}")
@@ -278,7 +386,6 @@ def print_job(job):
                     # إذا فشل اتصال الشبكة المباشر سنتركه يتجه للطريقة الثانية (ويندوز)
 
             # --- الطريقة الثانية: الطباعة القياسية عبر نظام الويندوز لـ USB / Shared Printers ---
-            zpl_data = zpl_content.encode("ascii", errors="ignore")
             hprinter = win32print.OpenPrinter(printer_name)
             try:
                 # إرسال أمر الطباعة
@@ -291,18 +398,18 @@ def print_job(job):
                 # مراقبة الـ Job في الويندوز لمدة ثانيتين لاكتشاف الأخطاء الفورية (مثل الطابعة Offline)
                 time.sleep(1.5)
                 jobs = win32print.EnumJobs(hprinter, 0, 100, 1)
-                printer_status_msg = "Spooler Success"
+                printer_status_msg = "Spooler: Queued"
                 
                 for j in jobs:
                     # فحص إذا كان الـ Job المرسل يحمل حالة خطأ في الويندوز
                     if j['pPrinterName'] == printer_name:
                         p_status = j['Status']
-                        if p_status & win32print.JOB_STATUS_ERROR: printer_status_msg = "Error: General Spooler Error"
-                        elif p_status & win32print.JOB_STATUS_OFFLINE: printer_status_msg = "Error: Printer Offline"
-                        elif p_status & win32print.JOB_STATUS_PAPEROUT: printer_status_msg = "Error: Paper Out"
-                        elif p_status & win32print.JOB_STATUS_PAUSED: printer_status_msg = "Warning: Printer Paused"
+                        flags = decode_job_status_flags(win32print, p_status)
+                        printer_status_msg = f"Spooler: {', '.join(flags)}"
+                        break
                 
-                if "Error" in printer_status_msg:
+                blocking_terms = {"Error", "Offline", "Paper Out", "User Intervention Required", "Blocked Queue"}
+                if any(term in printer_status_msg for term in blocking_terms):
                     raise Exception(printer_status_msg)
                 
                 log(f"ZPL printed via Windows → {printer_name}: {data['filename']}")
@@ -344,6 +451,7 @@ def get_jobs():
 @api.post("/print")
 def create_print(data: dict, authorization: str = Header(None)):
     auth(authorization)
+    validate_print_payload(data)
     add_job(data)
     log(f"Job queued: {data.get('type','?')} / {data.get('filename','?')}")
     return {"status": "queued"}
@@ -352,11 +460,19 @@ def create_print(data: dict, authorization: str = Header(None)):
 async def ws_print(websocket: WebSocket):
     await websocket.accept()
     while True:
-        data = await websocket.receive_text()
-        job  = json.loads(data)
-        add_job(job)
-        log(f"WS job queued: {job.get('type','?')}")
-        await websocket.send_text("queued")
+        try:
+            data = await websocket.receive_text()
+            job  = json.loads(data)
+            validate_print_payload(job)
+            add_job(job)
+            log(f"WS job queued: {job.get('type','?')}")
+            await websocket.send_text("queued")
+        except HTTPException as e:
+            await websocket.send_text(f"error:{e.detail}")
+        except json.JSONDecodeError:
+            await websocket.send_text("error:Invalid JSON payload")
+        except Exception as e:
+            await websocket.send_text(f"error:{str(e)}")
 
 
 def parse_version(version: str):

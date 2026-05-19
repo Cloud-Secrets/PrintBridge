@@ -1,0 +1,231 @@
+﻿{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "CloudERP Print Server API",
+    "version": "1.0.0",
+    "description": "API for queueing and tracking print jobs (pdf, image, html, zpl)."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:5000",
+      "description": "Local Print Server"
+    }
+  ],
+  "tags": [
+    { "name": "Health" },
+    { "name": "Printers" },
+    { "name": "Jobs" },
+    { "name": "Print" }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Server status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/printers": {
+      "get": {
+        "tags": ["Printers"],
+        "summary": "Get available printers",
+        "responses": {
+          "200": {
+            "description": "List of printer names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "tags": ["Jobs"],
+        "summary": "Get recent jobs",
+        "responses": {
+          "200": {
+            "description": "Recent jobs list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/JobsResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/print": {
+      "post": {
+        "tags": ["Print"],
+        "summary": "Queue print job",
+        "description": "Requires Authorization header value: CloudErpToken",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "CloudErpToken" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PrintJobRequest" },
+              "examples": {
+                "zpl_text": {
+                  "summary": "ZPL text payload",
+                  "value": {
+                    "type": "zpl",
+                    "filename": "label",
+                    "printer": "ZebraDesktopPrinter",
+                    "content": "^XA\n^CFD,40\n^FO20,20^FDAQC Label Test^FS\n^XZ",
+                    "content_encoding": "utf-8"
+                  }
+                },
+                "zpl_raw_bytes": {
+                  "summary": "ZPL raw bytes payload",
+                  "value": {
+                    "type": "zpl",
+                    "filename": "label_raw",
+                    "printer": "ZebraDesktopPrinter",
+                    "content_bytes_base64": "XlhBXlxYWiI="
+                  }
+                },
+                "pdf": {
+                  "summary": "PDF base64",
+                  "value": {
+                    "type": "pdf",
+                    "filename": "report.pdf",
+                    "printer": "Microsoft Print to PDF",
+                    "content": "JVBERi0xLjcK..."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job queued",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/QueueResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "example": "running" }
+        },
+        "required": ["status"]
+      },
+      "QueueResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "example": "queued" }
+        },
+        "required": ["status"]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "detail": { "type": "string" }
+        }
+      },
+      "JobsResponse": {
+        "type": "object",
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/JobItem" }
+          }
+        },
+        "required": ["jobs"]
+      },
+      "JobItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "status": { "type": "string", "example": "pending" },
+          "retries": { "type": "integer", "example": 0 },
+          "created": { "type": "string", "example": "2026-05-19 12:00:00" },
+          "type": { "type": "string", "example": "zpl" },
+          "filename": { "type": "string", "example": "label" },
+          "printer": { "type": "string", "example": "ZebraDesktopPrinter" },
+          "printer_response": { "type": "string", "example": "Spooler: Queued" }
+        }
+      },
+      "PrintJobRequest": {
+        "type": "object",
+        "required": ["type", "filename", "printer"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["pdf", "image", "html", "zpl"],
+            "example": "zpl"
+          },
+          "filename": {
+            "type": "string",
+            "example": "label"
+          },
+          "printer": {
+            "type": "string",
+            "example": "ZebraDesktopPrinter"
+          },
+          "content": {
+            "type": "string",
+            "description": "For html: plain HTML string. For pdf/image: base64 file content. For zpl: ZPL text content."
+          },
+          "content_bytes_base64": {
+            "type": "string",
+            "description": "ZPL only: raw printer bytes as base64."
+          },
+          "content_encoding": {
+            "type": "string",
+            "description": "ZPL text encoding. Default utf-8.",
+            "example": "utf-8"
+          }
+        }
+      }
+    }
+  }
+}
