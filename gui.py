@@ -1,6 +1,7 @@
 """
 gui.py
 واجهة المستخدم (Tkinter) وشريط المهام (System Tray)
+تم تعديل التصميم ليكون بالثيم الفاتح (Light Theme) مطابقاً للصورة المطلوبة
 """
 import os
 import threading
@@ -30,9 +31,9 @@ class PrintServerApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("CloudERP Print Server")
-        self.root.geometry("850x480")
-        self.root.minsize(700, 380)
-        self.root.configure(bg="#0f1117")
+        self.root.geometry("900x550")
+        self.root.minsize(800, 450)
+        self.root.configure(bg="#f0f4f8") # خلفية فاتحة
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
         try:
@@ -47,81 +48,131 @@ class PrintServerApp:
         self._start_update_poller()
 
     def _build_ui(self):
-        FONT_MONO  = ("Consolas", 9)
-        BG         = "#0f1117"
-        CARD       = "#1c1f2b"
-        ACCENT     = "#1a73e8"
-        GREEN      = "#34a853"
-        TEXT       = "#e8eaf6"
-        MUTED      = "#7986cb"
+        FONT_MONO  = ("Segoe UI", 10)
+        BG         = "#f4f7fb"  # لون خلفية النافذة الأساسي
+        CARD       = "#ffffff"  # البطاقات باللون الأبيض
+        ACCENT     = "#0f4b8f"  # الأزرق الغامق للنصوص
+        GREEN_BG   = "#d4edda"  # خلفية زر الحالة الأخضر
+        GREEN_FG   = "#155724"  # لون نص زر الحالة الأخضر
+        TEXT       = "#333333"  # النصوص العادية
+        MUTED      = "#6c757d"  # النصوص الثانوية (الرمادي)
 
-        header = tk.Frame(self.root, bg=ACCENT, height=52)
-        header.pack(fill="x")
+        self.root.configure(bg=BG)
+
+        # الشريط العلوي (Header)
+        header = tk.Frame(self.root, bg=BG, height=70)
+        header.pack(fill="x", padx=20, pady=15)
         header.pack_propagate(False)
 
-        tk.Label(header, text="🖨  QaratErp Print Server",
-                 font=("Segoe UI Semibold", 14), bg=ACCENT, fg="white"
-                 ).pack(side="left", padx=18, pady=12)
+        # العنوان على اليسار
+        title_frame = tk.Frame(header, bg=BG)
+        title_frame.pack(side="left")
+        tk.Label(title_frame, text="🖨", font=("Segoe UI", 26), bg=BG, fg=ACCENT).pack(side="left", padx=(0, 10))
+        tk.Label(title_frame, text="QaratErp Print Server", font=("Segoe UI Semibold", 18), bg=BG, fg=ACCENT).pack(side="left")
 
-        self.status_dot = tk.Label(header, text="● RUNNING",
-                                   font=("Segoe UI", 9, "bold"),
-                                   bg=ACCENT, fg=GREEN)
-        self.status_dot.pack(side="right", padx=18)
+        # الحالة على اليمين
+        status_frame = tk.Frame(header, bg=BG)
+        status_frame.pack(side="right", fill="y")
+        
+        # زر التشغيل الأخضر
+        pill_frame = tk.Frame(status_frame, bg=GREEN_BG, padx=12, pady=6, highlightbackground="#c3e6cb", highlightthickness=1)
+        pill_frame.pack(side="right", padx=(15, 0), pady=12)
+        self.status_dot = tk.Label(pill_frame, text="● RUNNING ✔", font=("Segoe UI", 10, "bold"), bg=GREEN_BG, fg=GREEN_FG)
+        self.status_dot.pack()
 
-        self.update_label = tk.Label(header, text="Checking updates...", font=("Segoe UI", 9), bg=ACCENT, fg="#b3c7f7")
-        self.update_label.pack(side="right", padx=8)
+        # التحديثات والرابط
+        self.update_label = tk.Label(status_frame, text="Checking updates...", font=("Segoe UI", 11), bg=BG, fg=MUTED)
+        self.update_label.pack(side="right", padx=15, pady=18)
 
-        tk.Label(header, text=f"http://{HOST}:{PORT}", font=FONT_MONO, bg=ACCENT, fg="#b3c7f7").pack(side="right", padx=4)
+        tk.Label(status_frame, text=f"http://{HOST}:{PORT}", font=("Segoe UI", 11), bg=BG, fg=TEXT).pack(side="right", padx=15, pady=18)
 
-        pane = tk.PanedWindow(self.root, orient="vertical", bg=BG, sashwidth=6, sashrelief="flat")
-        pane.pack(fill="both", expand=True, padx=10, pady=10)
+        # خط فاصل
+        tk.Frame(self.root, bg="#dce1e6", height=1).pack(fill="x")
 
-        jobs_frame = tk.Frame(pane, bg=CARD)
-        tk.Label(jobs_frame, text="  Recent Jobs", font=("Segoe UI Semibold", 10), bg=CARD, fg=MUTED, anchor="w").pack(fill="x", pady=(6, 0))
+        # مساحة المحتوى الأساسية
+        main_frame = tk.Frame(self.root, bg=BG)
+        main_frame.pack(fill="both", expand=True, padx=25, pady=20)
+
+        # عنوان الجدول
+        tk.Label(main_frame, text="Recent Jobs", font=("Segoe UI Semibold", 13), bg=BG, fg="#000000", anchor="w").pack(fill="x", pady=(0, 10))
+
+        # إطار يحتوي على الجدول والأزرار الجانبية
+        content_frame = tk.Frame(main_frame, bg=BG)
+        content_frame.pack(fill="both", expand=True)
+
+        # بطاقة الجدول البيضاء
+        table_card = tk.Frame(content_frame, bg=CARD, highlightbackground="#e2e8f0", highlightthickness=1)
+        table_card.pack(side="left", fill="both", expand=True)
 
         cols = ("id", "status", "type", "printer", "filename", "response", "created")
-        self.tree = ttk.Treeview(jobs_frame, columns=cols, show="headings", height=8)
+        self.tree = ttk.Treeview(table_card, columns=cols, show="headings", height=8)
 
+        # إعداد ستايل الجدول ليطابق الصورة
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Treeview", background="#0a0d14", foreground=TEXT, fieldbackground="#0a0d14", rowheight=24, font=FONT_MONO)
-        style.configure("Treeview.Heading", background=CARD, foreground=MUTED, font=("Segoe UI", 9, "bold"), relief="flat")
-        style.map("Treeview", background=[("selected", ACCENT)])
+        style.configure("Treeview", background=CARD, foreground=TEXT, fieldbackground=CARD, rowheight=40, font=FONT_MONO, borderwidth=0)
+        style.configure("Treeview.Heading", background=CARD, foreground="#000000", font=("Segoe UI", 10, "bold"), borderwidth=0)
+        style.map("Treeview", background=[("selected", "#e3f2fd")], foreground=[("selected", "#000000")])
 
-        widths = {"id": 40, "status": 72, "type": 50, "printer": 120, "filename": 120, "response": 200, "created": 80}
+        # تعيين أعمدة الجدول
+        widths = {"id": 50, "status": 80, "type": 90, "printer": 200, "filename": 180, "response": 120, "created": 100}
         for c in cols:
             self.tree.heading(c, text=c.upper())
-            self.tree.column(c, width=widths.get(c, 100), anchor="w")
+            self.tree.column(c, width=widths.get(c, 100), anchor="center" if c in ("id", "status", "type") else "w")
 
-        sb = ttk.Scrollbar(jobs_frame, orient="vertical", command=self.tree.yview)
+        # شريط التمرير
+        sb = ttk.Scrollbar(table_card, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
-        sb.pack(side="right", fill="y", pady=6, padx=(0, 6))
+        self.tree.pack(side="left", fill="both", expand=True, padx=2, pady=2)
+        sb.pack(side="right", fill="y", pady=2, padx=(0, 2))
 
-        hint = tk.Label(jobs_frame, text="Right-click any job to restart or delete it.", font=("Segoe UI", 9), bg=CARD, fg="#9aa0c3", anchor="w")
-        hint.pack(fill="x", padx=6, pady=(0, 4))
+        # إطار الأزرار الجانبية
+        action_frame = tk.Frame(content_frame, bg=BG)
+        action_frame.pack(side="right", fill="y", padx=(20, 0))
 
+        # زر إعادة التشغيل
+        self.btn_restart = tk.Button(
+            action_frame, 
+            text="⟳\n\nRestart\nSelected Job", 
+            font=("Segoe UI", 11), 
+            bg=CARD, 
+            fg=TEXT, 
+            relief="solid", 
+            bd=1,
+            cursor="hand2",
+            width=14,
+            height=5,
+            command=self._restart_selected_job
+        )
+        self.btn_restart.pack(side="top", fill="x", pady=0)
+        
+        # زر الحذف
+        self.btn_delete = tk.Button(
+            action_frame, 
+            text="🗑\n\nDelete\nSelected Job", 
+            font=("Segoe UI", 11), 
+            bg=CARD, 
+            fg="#dc3545", 
+            relief="solid", 
+            bd=1,
+            cursor="hand2",
+            width=14,
+            height=5,
+            command=self._delete_selected_job
+        )
+        self.btn_delete.pack(side="top", fill="x", pady=(15, 0))
+
+        # القائمة عند الضغط بالزر الأيمن
         self._job_menu = tk.Menu(self.root, tearoff=0)
         self._job_menu.add_command(label="Restart Job", command=self._restart_selected_job)
         self._job_menu.add_command(label="Delete Job", command=self._delete_selected_job)
         self.tree.bind("<Button-3>", self._on_job_right_click)
 
-        action_bar = tk.Frame(jobs_frame, bg=CARD)
-        action_bar.pack(fill="x", padx=6, pady=(0, 8))
-        tk.Button(action_bar, text="Restart Job", command=self._restart_selected_job, font=("Segoe UI", 9), bg="#252840", fg=MUTED, relief="flat", cursor="hand2", padx=10).pack(side="left", padx=(0, 6))
-        tk.Button(action_bar, text="Delete Job", command=self._delete_selected_job, font=("Segoe UI", 9), bg="#252840", fg=MUTED, relief="flat", cursor="hand2", padx=10).pack(side="left")
-
-        self.tree.tag_configure("done",    foreground="#34a853")
-        self.tree.tag_configure("failed",  foreground="#ea4335")
-        self.tree.tag_configure("pending", foreground="#fbbc04")
-        self.tree.tag_configure("processing", foreground="#4285f4")
-
-        pane.add(jobs_frame, minsize=140)
-
-        footer = tk.Frame(self.root, bg="#12151f", height=30)
-        footer.pack(fill="x")
-        footer.pack_propagate(False)
-        tk.Label(footer, text="Minimise to hide • right-click tray icon to quit", font=("Segoe UI", 8), bg="#12151f", fg="#4a5080").pack(side="left", padx=12, pady=6)
+        # ألوان الحالات
+        self.tree.tag_configure("done", foreground="#28a745")
+        self.tree.tag_configure("failed", foreground="#dc3545")
+        self.tree.tag_configure("pending", foreground="#ffc107")
+        self.tree.tag_configure("processing", foreground="#007bff")
 
     def _start_jobs_poller(self):
         def poll():
@@ -154,9 +205,26 @@ class PrintServerApp:
             self.tree.delete(row)
         for j in get_all_jobs(50):
             tag = j["status"]
+            
+            # تجميل نوع الملف
+            job_type = str(j.get("type", "")).upper()
+            if job_type == "PDF":
+                type_display = "📄 PDF"
+            elif job_type == "IMAGE":
+                type_display = "🖼 IMG"
+            elif job_type == "HTML":
+                type_display = "🌐 HTML"
+            elif job_type == "ZPL":
+                type_display = "🏷 ZPL"
+            else:
+                type_display = job_type
+
+            # استخراج التاريخ فقط للتبسيط كالصورة (أو يمكن إبقاء الوقت)
+            created_date = str(j["created"]).split(" ")[0] if j["created"] else ""
+
             self.tree.insert("", "end",
-                values=(j["id"], j["status"], j["type"],
-                        j["printer"], j["filename"], j["printer_response"], j["created"]),
+                values=(j["id"], j["status"], type_display,
+                        j["printer"], j["filename"], j["printer_response"], created_date),
                 tags=(tag,))
 
     def _on_job_right_click(self, event):
