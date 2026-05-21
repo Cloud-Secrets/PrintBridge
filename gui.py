@@ -31,8 +31,8 @@ class PrintServerApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("CloudERP Print Server")
-        self.root.geometry("900x550")
-        self.root.minsize(800, 450)
+        self.root.geometry("900x420")
+        self.root.minsize(800, 380)
         self.root.configure(bg="#f0f4f8") # خلفية فاتحة
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
@@ -48,7 +48,7 @@ class PrintServerApp:
         self._start_update_poller()
 
     def _build_ui(self):
-        FONT_MONO  = ("Segoe UI", 10)
+        FONT_MONO  = ("Segoe UI", 9)
         BG         = "#f4f7fb"  # لون خلفية النافذة الأساسي
         CARD       = "#ffffff"  # البطاقات باللون الأبيض
         ACCENT     = "#0f4b8f"  # الأزرق الغامق للنصوص
@@ -60,43 +60,43 @@ class PrintServerApp:
         self.root.configure(bg=BG)
 
         # الشريط العلوي (Header)
-        header = tk.Frame(self.root, bg=BG, height=70)
-        header.pack(fill="x", padx=20, pady=15)
+        header = tk.Frame(self.root, bg=BG, height=50)
+        header.pack(fill="x", padx=20, pady=8)
         header.pack_propagate(False)
 
         # العنوان على اليسار
         title_frame = tk.Frame(header, bg=BG)
         title_frame.pack(side="left")
-        tk.Label(title_frame, text="🖨", font=("Segoe UI", 26), bg=BG, fg=ACCENT).pack(side="left", padx=(0, 10))
-        tk.Label(title_frame, text="QaratErp Print Server", font=("Segoe UI Semibold", 18), bg=BG, fg=ACCENT).pack(side="left")
+        tk.Label(title_frame, text="🖨", font=("Segoe UI", 20), bg=BG, fg=ACCENT).pack(side="left", padx=(0, 10))
+        tk.Label(title_frame, text="QaratErp Print Server", font=("Segoe UI Semibold", 14), bg=BG, fg=ACCENT).pack(side="left")
 
         # الحالة على اليمين
         status_frame = tk.Frame(header, bg=BG)
         status_frame.pack(side="right", fill="y")
         
         # زر التشغيل الأخضر
-        pill_frame = tk.Frame(status_frame, bg=GREEN_BG, padx=12, pady=6, highlightbackground="#c3e6cb", highlightthickness=1)
-        pill_frame.pack(side="right", padx=(15, 0), pady=12)
-        self.status_dot = tk.Label(pill_frame, text="● RUNNING ✔", font=("Segoe UI", 10, "bold"), bg=GREEN_BG, fg=GREEN_FG)
+        pill_frame = tk.Frame(status_frame, bg=GREEN_BG, padx=8, pady=4, highlightbackground="#c3e6cb", highlightthickness=1)
+        pill_frame.pack(side="right", padx=(15, 0), pady=8)
+        self.status_dot = tk.Label(pill_frame, text="● RUNNING ✔", font=("Segoe UI", 9, "bold"), bg=GREEN_BG, fg=GREEN_FG)
         self.status_dot.pack()
 
         # التحديثات والرابط
-        self.update_label = tk.Label(status_frame, text="Checking updates...", font=("Segoe UI", 11), bg=BG, fg=MUTED)
-        self.update_label.pack(side="right", padx=15, pady=18)
+        self.update_label = tk.Label(status_frame, text="Checking updates...", font=("Segoe UI", 9), bg=BG, fg=MUTED)
+        self.update_label.pack(side="right", padx=15, pady=10)
 
-        tk.Label(status_frame, text=f"http://{HOST}:{PORT}", font=("Segoe UI", 11), bg=BG, fg=TEXT).pack(side="right", padx=15, pady=18)
+        tk.Label(status_frame, text=f"http://{HOST}:{PORT}", font=("Segoe UI", 9), bg=BG, fg=TEXT).pack(side="right", padx=15, pady=10)
 
         # خط فاصل
         tk.Frame(self.root, bg="#dce1e6", height=1).pack(fill="x")
 
         # مساحة المحتوى الأساسية
         main_frame = tk.Frame(self.root, bg=BG)
-        main_frame.pack(fill="both", expand=True, padx=25, pady=20)
+        main_frame.pack(fill="both", expand=True, padx=15, pady=10)
 
         # عنوان الجدول
-        tk.Label(main_frame, text="Recent Jobs", font=("Segoe UI Semibold", 13), bg=BG, fg="#000000", anchor="w").pack(fill="x", pady=(0, 10))
+        tk.Label(main_frame, text="Recent Jobs", font=("Segoe UI Semibold", 11), bg=BG, fg="#000000", anchor="w").pack(fill="x", pady=(0, 5))
 
-        # إطار يحتوي على الجدول والأزرار الجانبية
+        # إطار يحتوي على الجدول (يأخذ المساحة كاملة الآن)
         content_frame = tk.Frame(main_frame, bg=BG)
         content_frame.pack(fill="both", expand=True)
 
@@ -104,21 +104,42 @@ class PrintServerApp:
         table_card = tk.Frame(content_frame, bg=CARD, highlightbackground="#e2e8f0", highlightthickness=1)
         table_card.pack(side="left", fill="both", expand=True)
 
-        cols = ("id", "status", "type", "printer", "filename", "response", "created")
-        self.tree = ttk.Treeview(table_card, columns=cols, show="headings", height=8)
+        cols = ("id", "status", "type", "printer", "filename", "response", "created", "restart", "delete")
+        self.tree = ttk.Treeview(table_card, columns=cols, show="headings", height=10)
 
         # إعداد ستايل الجدول ليطابق الصورة
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Treeview", background=CARD, foreground=TEXT, fieldbackground=CARD, rowheight=40, font=FONT_MONO, borderwidth=0)
-        style.configure("Treeview.Heading", background=CARD, foreground="#000000", font=("Segoe UI", 10, "bold"), borderwidth=0)
+        style.configure("Treeview", background=CARD, foreground=TEXT, fieldbackground=CARD, rowheight=28, font=FONT_MONO, borderwidth=0)
+        style.configure("Treeview.Heading", background=CARD, foreground="#000000", font=("Segoe UI", 9, "bold"), borderwidth=0)
         style.map("Treeview", background=[("selected", "#e3f2fd")], foreground=[("selected", "#000000")])
 
         # تعيين أعمدة الجدول
-        widths = {"id": 50, "status": 80, "type": 90, "printer": 200, "filename": 180, "response": 120, "created": 100}
+        widths = {
+            "id": 40,
+            "status": 75,
+            "type": 75,
+            "printer": 180,
+            "filename": 150,
+            "response": 120,
+            "created": 80,
+            "restart": 70,
+            "delete": 60
+        }
+        headings = {
+            "id": "ID",
+            "status": "STATUS",
+            "type": "TYPE",
+            "printer": "PRINTER",
+            "filename": "FILENAME",
+            "response": "RESPONSE",
+            "created": "CREATED",
+            "restart": "REPRINT",
+            "delete": "DELETE"
+        }
         for c in cols:
-            self.tree.heading(c, text=c.upper())
-            self.tree.column(c, width=widths.get(c, 100), anchor="center" if c in ("id", "status", "type") else "w")
+            self.tree.heading(c, text=headings.get(c, c.upper()))
+            self.tree.column(c, width=widths.get(c, 100), anchor="center" if c in ("id", "status", "type", "restart", "delete") else "w")
 
         # شريط التمرير
         sb = ttk.Scrollbar(table_card, orient="vertical", command=self.tree.yview)
@@ -126,47 +147,12 @@ class PrintServerApp:
         self.tree.pack(side="left", fill="both", expand=True, padx=2, pady=2)
         sb.pack(side="right", fill="y", pady=2, padx=(0, 2))
 
-        # إطار الأزرار الجانبية
-        action_frame = tk.Frame(content_frame, bg=BG)
-        action_frame.pack(side="right", fill="y", padx=(20, 0))
-
-        # زر إعادة التشغيل
-        self.btn_restart = tk.Button(
-            action_frame, 
-            text="⟳\n\nRestart\nSelected Job", 
-            font=("Segoe UI", 11), 
-            bg=CARD, 
-            fg=TEXT, 
-            relief="solid", 
-            bd=1,
-            cursor="hand2",
-            width=14,
-            height=5,
-            command=self._restart_selected_job
-        )
-        self.btn_restart.pack(side="top", fill="x", pady=0)
-        
-        # زر الحذف
-        self.btn_delete = tk.Button(
-            action_frame, 
-            text="🗑\n\nDelete\nSelected Job", 
-            font=("Segoe UI", 11), 
-            bg=CARD, 
-            fg="#dc3545", 
-            relief="solid", 
-            bd=1,
-            cursor="hand2",
-            width=14,
-            height=5,
-            command=self._delete_selected_job
-        )
-        self.btn_delete.pack(side="top", fill="x", pady=(15, 0))
-
         # القائمة عند الضغط بالزر الأيمن
         self._job_menu = tk.Menu(self.root, tearoff=0)
         self._job_menu.add_command(label="Restart Job", command=self._restart_selected_job)
         self._job_menu.add_command(label="Delete Job", command=self._delete_selected_job)
         self.tree.bind("<Button-3>", self._on_job_right_click)
+        self.tree.bind("<Button-1>", self._on_table_click)
 
         # ألوان الحالات
         self.tree.tag_configure("done", foreground="#28a745")
@@ -224,7 +210,8 @@ class PrintServerApp:
 
             self.tree.insert("", "end",
                 values=(j["id"], j["status"], type_display,
-                        j["printer"], j["filename"], j["printer_response"], created_date),
+                        j["printer"], j["filename"], j["printer_response"], created_date,
+                        "⟳", "🗑"),
                 tags=(tag,))
 
     def _on_job_right_click(self, event):
@@ -243,16 +230,45 @@ class PrintServerApp:
     def _delete_selected_job(self):
         job_id = self._get_selected_job_id()
         if job_id is None: return
-        delete_job(job_id)
-        self._refresh_jobs()
-        log(f"Job deleted: {job_id}")
+        self._delete_job_by_id(job_id)
 
     def _restart_selected_job(self):
         job_id = self._get_selected_job_id()
         if job_id is None: return
+        self._restart_job_by_id(job_id)
+
+    def _delete_job_by_id(self, job_id):
+        delete_job(job_id)
+        self._refresh_jobs()
+        log(f"Job deleted: {job_id}")
+
+    def _restart_job_by_id(self, job_id):
         restart_job(job_id)
         self._refresh_jobs()
         log(f"Job restarted: {job_id}")
+
+    def _on_table_click(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "cell":
+            column = self.tree.identify_column(event.x)
+            item_id = self.tree.identify_row(event.y)
+            if not item_id:
+                return
+            col_id = self.tree.column(column, "id")
+            
+            # Get job ID from the row
+            values = self.tree.item(item_id, "values")
+            if not values:
+                return
+            try:
+                job_id = int(values[0])
+            except (ValueError, IndexError):
+                return
+            
+            if col_id == "restart":
+                self._restart_job_by_id(job_id)
+            elif col_id == "delete":
+                self._delete_job_by_id(job_id)
 
     def hide_window(self): self.root.withdraw()
     
